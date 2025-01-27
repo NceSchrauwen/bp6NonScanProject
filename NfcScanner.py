@@ -43,10 +43,24 @@ class NfcScannerApp:
         self.cart = []
         self.total_price = 0.0
         self.last_uid = None
+        self.auto_scan_enabled = False  # Flag to control auto-scanning
+        self.collected_items = 0
 
         # Welcome label with worker's name
         self.label_welcome = tk.Label(self.master, text=f"Welcome, {self.worker_name}!", font=("Arial", 16, "bold"))
         self.label_welcome.pack(pady=10)
+
+        # Start auto-scan button
+        self.button_start_scan = tk.Button(self.master, text="Start Auto-Scan", command=self.start_auto_scan)
+        self.button_start_scan.pack(pady=5)
+
+        # Stop auto-scan button
+        self.button_stop_scan = tk.Button(self.master, text="Stop Auto-Scan", command=self.stop_auto_scan)
+        self.button_stop_scan.pack(pady=5)
+
+        # Manual scan button
+        self.button_manual_scan = tk.Button(self.master, text="Manual Scan", command=self.scan_item)
+        self.button_manual_scan.pack(pady=5)
 
         # Cart label
         self.label_cart = tk.Label(self.master, text="Cart: (empty)", justify="left", anchor="w")
@@ -87,15 +101,43 @@ class NfcScannerApp:
     # Function to automatically scan for NFC codes
     # TODO: Implement a button to stop the auto-scan? (To not overload the API)
     def auto_scan(self):
-        self.scan_item()
-        self.master.after(1000, self.auto_scan) # Schedule the next scan every next second
+        if self.auto_scan_enabled:
+            print("Auto-scanning...")
+            self.scan_item()
+            self.master.after(2000, self.auto_scan) # Repeat scan every 2 seconds
+
+    def start_auto_scan(self):
+        if not self.auto_scan_enabled:
+            print("Auto-Scan started.")  # Debug log
+            self.auto_scan_enabled = True
+            self.auto_scan()
+
+    def stop_auto_scan(self):
+        if self.auto_scan_enabled:
+            print("Auto-Scan stopped.")
+            self.auto_scan_enabled = False
 
     # Function to update the cart label and total price
     def update_cart_label(self):
-        # Generate cart text
-        cart_content = "\n".join(
-            [f"ID: {item['id']} - {item['details']['name']} - €{item['details']['price']:.2f}" for item in self.cart]
+        display_limit = 5  # Limit the number of items displayed in the cart
+        total_items = len(self.cart)
+        # collected_items = total_items
+
+        if total_items > display_limit:
+            cart_to_display = self.cart[-display_limit:]
+            dots = "...\n"  # Indicate more items in the cart (not displayed)
+            start_index = total_items - display_limit + 1 # Calculate the starting index
+        else:
+            cart_to_display = self.cart
+            dots = "" # No dots needed
+            start_index = 1 # Start from the first item
+
+        # Generate cart content with proper enumeration
+        cart_content = dots + "\n".join(
+            [f"{start_index + idx}. ID: {item['id']} - {item['details']['name']} - €{item['details']['price']:.2f}"
+            for idx, item in enumerate(reversed(cart_to_display))]
         )
+
         self.label_cart.config(text=f"Cart:\n{cart_content}")
 
         # Update total price label
