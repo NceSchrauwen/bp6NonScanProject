@@ -224,13 +224,6 @@ class NfcScannerApp:
             print("Auto-Scan started.")  # Debug log
             self.auto_scan_enabled = True
 
-            # TODO: Move this so it can be called without having to use the start_auto_scan button to start non-scan
-            # # ✅ Start HC-05 connection ONLY when scanning starts
-            # if not hasattr(self, "hc05") or not self.hc05.sock:
-            #     self.hc05 = HC05Communicator()
-            #     self.hc05.connect()
-            #     threading.Thread(target=self.hc05.start_listening, daemon=True).start()  # Run in a background thread
-
             # self.initialize_hc05()  # Initialize HC-05 connection
             self.auto_scan()  # Start the auto-scan loop
 
