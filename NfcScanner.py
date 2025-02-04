@@ -1,10 +1,12 @@
 # BP6 Non-Scan Project - NFC Scanner Class
 # Author: Nina Schrauwen
-
+import threading
 import tkinter as tk
 import requests
 import socket
+import time
 from tkinter import messagebox
+from HC05Communicator import HC05Communicator
 
 # Unified database for all NFC codes
 items_db = {
@@ -14,8 +16,6 @@ items_db = {
 }
 
 PI_API_URL = "http://192.168.2.34:5000/get-uid"
-HC05_MAC = "00:25:00:00:13:9F"  # Replace with your HC-05 MAC address
-HC05_PORT = 1  # Default port for HC-05
 
 def get_uid_from_api():
     try:
@@ -45,12 +45,7 @@ class NfcScannerApp:
         self.worker_name = worker_name
         self.cart = []
         self.total_price = 0.0
-        self.last_uid = None
         self.auto_scan_enabled = False  # Flag to control auto-scanning
-        self.sock = None  # Initialize self.sock to None
-
-        # Attempt to connect to the HC-05
-        self.connect_to_hc05()
 
         # Welcome label with worker's name
         self.label_welcome = tk.Label(self.master, text=f"Welcome, {self.worker_name}!", font=("Arial", 16, "bold"))
@@ -68,6 +63,14 @@ class NfcScannerApp:
         self.button_manual_scan = tk.Button(self.master, text="Manual Scan", command=self.scan_item)
         self.button_manual_scan.pack(pady=5)
 
+        # Manual Connect to HC-05 button
+        self.button_manual_scan = tk.Button(self.master, text="Connect to HC-05", command=self.connect_hc05)
+        self.button_manual_scan.pack(pady=5)
+
+        # Manual Send Command Non-Scan button
+        self.button_manual_scan = tk.Button(self.master, text="Request Non-Scan", command=self.send_message)
+        self.button_manual_scan.pack(pady=5)
+
         # Cart label
         self.label_cart = tk.Label(self.master, text="Cart: (empty)", justify="left", anchor="w")
         self.label_cart.pack(pady=10, fill="both", expand=True)
@@ -80,8 +83,6 @@ class NfcScannerApp:
         self.button_exit = tk.Button(self.master, text="Exit", command=self.master.quit)
         self.button_exit.pack(pady=10)
 
-        self.master.after(500, self.receive_message)  # Start listening for responses from HC-05
-
     # Function to retrieve and display the scanned item
     def scan_item(self):
         # Get the NFC code from the API
@@ -89,13 +90,6 @@ class NfcScannerApp:
 
         if uid:
             print(f"📡 Scanned UID: {uid}")  # Debugging
-
-            # Check if UID was just scanned to avoid duplicate processing
-            if uid == self.last_uid:
-                print(f"⚠️ UID {uid} already scanned. Skipping duplicate.")
-                return
-
-            self.last_uid = uid  # Update last scanned UID
 
             if uid in items_db:
                 # ✅ UID is recognized → Add item to cart
@@ -107,8 +101,7 @@ class NfcScannerApp:
 
             elif uid not in items_db:
                 # ❗ UID is NOT recognized → Request approval via HC-05
-                print(f"❌ Item NOT found for UID: {uid}. Requesting approval...")
-                self.request_approval(uid)
+                print(f"❌ Item NOT found for UID: {uid}. Use Non-Scan button to request approval.")
 
             else:
                 # 🛑 Catch unexpected cases
@@ -117,61 +110,89 @@ class NfcScannerApp:
         else:
             print("⚠️ No UID detected.")  # Debugging
 
+    def connect_hc05(self):
+        """ Initialize HC-05 connection and listen for responses """
+        if not hasattr(self, "hc05") or not self.hc05.sock:
+            self.hc05 = HC05Communicator()
+            self.hc05.connect()
 
-    def connect_to_hc05(self):
-        try:
-            # Create an RFCOMM socket
-            self.sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-            self.sock.connect((HC05_MAC, HC05_PORT))
-            print("Connected to HC-05!")
-        except Exception as e:
-            self.sock = None # Ensure the socket is None if the connection fails
-            print(f"Failed to connect to HC-05: {e}")
+            self.flush_old_buffer()  # Flush old buffer in case of leftover data
 
-    def request_approval(self, uid):
-        if self.sock:
+    def flush_old_buffer(self):
+        """ Flush any old, unread data from the buffer before sending new messages. """
+        if self.hc05.sock:
+            self.hc05.sock.settimeout(0.5)
             try:
-                message = f"Requesting approval for item with UID: {uid}"
-                self.sock.send(message.encode())
-                print(f"Following approval request sent: {message}")
-            except Exception as e:
-                print(f"Error sending approval request: {e}")
-        else:
-            print("HC-05 is not connected. Cannot send approval request.")
+                while True:
+                    leftover = self.hc05.sock.recv(1024)
+                    if not leftover:
+                        break
+            except socket.timeout:
+                pass  # ✅ Ignore timeout (it means the buffer is empty)
+            print("🧹 Flushed old buffer data")
+
+    def send_message(self):
+        """ Send an approval request to HC-05 without reconnecting. """
+        # If there is no HC-05 connection, exit the function
+        if not hasattr(self, "hc05") or not self.hc05.sock:
+            print("⚠️ HC-05 is not connected! Please connect first.")
+            return
+
+        # ✅ Ensure only ONE listening thread runs
+        if not hasattr(self, "_listening_thread") or not self._listening_thread.is_alive():
+            self._listening_thread = threading.Thread(target=self._listen_for_response, daemon=True)
+            self._listening_thread.start()
+            print("👂 Listening for responses...")
+
+        time.sleep(0.2)  # ✅ Give HC-05 time to process
+
+        message = "R"  # ✅ Single character request
+        self.hc05.send_message(message)
+        print(f"✅ Approval request sent: {message}")
+
+    def _listen_for_response(self):
+        """ Continuously listen for responses from HC-05 without blocking UI """
+        print("Waiting for response...")  # Debug log
+
+        buffer = ""  # Store incoming data
+
+        while True:
+            chunk = self.hc05.receive_message()
+
+            if chunk:
+                buffer += chunk # Append received data
+                print(f"🛠 Raw HEX chunk response from HC-05: {chunk.encode().hex()}")  # Debugging
+
+                # ✅ If buffer exceeds 1 character, show and reset it
+                if not chunk.isprintable():
+                    print(f"🚨 Ignoring non-printable chunk: {chunk.encode().hex()}")
+                    continue  # Keep listening for a valid response
+
+                # ✅ If buffer exceeds 1 character, show and reset it
+                if len(buffer) > 1:
+                    print(f"⚠️ Buffer overflow detected: '{buffer}' -> Flushing excess data")
+                    buffer = ""  # Reset buffer when no valid response is found
+
+                if buffer.strip() == "R":
+                    response = buffer.strip()
+                    print(f"✅ Received response from HC-05: {response}")
+
+                    self.master.after(0, lambda: messagebox.showinfo("❗HC-05 Response", response))
+                    buffer = ""  # Reset buffer after receiving a valid response
+                else:
+                    print(f"🚨 Ignoring invalid response: '{buffer.encode().hex()}'")
+                    buffer = ""  # ✅ Reset buffer on invalid response
+
+            time.sleep(0.1)  # Prevent high CPU usage
 
     def receive_message(self):
-        if self.sock:
-            try:
-                self.sock.settimeout(10)  # Increase timeout
-                raw_response = self.sock.recv(1024)  # Receive raw bytes
-
-                # Debugging: Print raw bytes before decoding
-                print(f"Raw Response from HC-05: {raw_response.hex()}")
-
-                try:
-                    # 🔍 Try decoding as UTF-8, replacing invalid bytes
-                    response = raw_response.decode("utf-8", errors="replace").strip()
-                except UnicodeDecodeError:
-                    # ❌ UTF-8 failed, try ISO-8859-1 (Latin-1)
-                    response = raw_response.decode("iso-8859-1", errors="replace").strip()
-
-                if response:
-                    print(f"Received response from HC-05: {response}")
-                    if "Approval" in response:
-                        messagebox.showinfo("HC-05 Response", response)
-                else:
-                    print("No response received within the timeout.")
-
-            except socket.timeout:
-                print("Socket timeout: No response received.")
-
-            except Exception as e:
-                print(f"Failed to receive message: {e}")
-
-        else:
-            print("HC-05 is not connected. Cannot receive messages.")
-
-        self.master.after(1000, self.receive_message)  # Schedule the next message check
+        """ Listen for incoming messages from HC-05 """
+        while True:
+            response = self.hc05.receive_message()
+            if response:
+                print(f"✅ Received response from HC-05: {response}")
+                messagebox.showinfo("❗HC-05 Response", response)
+            time.sleep(1)  # Avoid constant polling
 
     # Function to automatically scan for NFC codes
     def auto_scan(self):
@@ -180,11 +201,38 @@ class NfcScannerApp:
             self.scan_item()
             self.master.after(2000, self.auto_scan) # Repeat scan every 2 seconds
 
+    def initialize_hc05(self):
+        """ Initialize HC-05 connection and listen for responses """
+        if not hasattr(self, "hc05") or not self.hc05.sock:
+            self.hc05 = HC05Communicator()
+            self.hc05.connect()
+            self.hc05.start_listening()  # Start listening for responses
+
+            # ✅ Flush old buffer in case of leftover data
+            self.hc05.sock.settimeout(0.5)
+            try:
+                while True:
+                    leftover = self.hc05.sock.recv(1024)
+                    if not leftover:
+                        break
+            except socket.timeout:
+                pass  # Ignore if buffer is empty
+            print("🧹 Flushed old buffer data")
+
     def start_auto_scan(self):
         if not self.auto_scan_enabled:
             print("Auto-Scan started.")  # Debug log
             self.auto_scan_enabled = True
-            self.auto_scan()
+
+            # TODO: Move this so it can be called without having to use the start_auto_scan button to start non-scan
+            # # ✅ Start HC-05 connection ONLY when scanning starts
+            # if not hasattr(self, "hc05") or not self.hc05.sock:
+            #     self.hc05 = HC05Communicator()
+            #     self.hc05.connect()
+            #     threading.Thread(target=self.hc05.start_listening, daemon=True).start()  # Run in a background thread
+
+            # self.initialize_hc05()  # Initialize HC-05 connection
+            self.auto_scan()  # Start the auto-scan loop
 
     def stop_auto_scan(self):
         if self.auto_scan_enabled:

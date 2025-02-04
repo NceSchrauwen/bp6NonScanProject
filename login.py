@@ -8,8 +8,6 @@ from WorkerDB import Database
 # Import the NfcScannerApp class to be able to scan and identify NFC codes
 from NfcScanner import NfcScannerApp
 
-worker_name = ""
-
 class LoginApp:
     def __init__(self, master):
         # Initialize the window
